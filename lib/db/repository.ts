@@ -86,6 +86,25 @@ export async function toggleSubscription(id: number, active: boolean) {
     .set({ active, updatedAt: new Date() })
     .where(eq(subscriptions.id, id))
     .returning()
+  if (!updated) throw new Error(`Subscription ${id} not found`)
+  return updated
+}
+
+export async function updateSubscription(
+  id: number,
+  patch: {
+    eventFilter?: object
+    deliveryChannel?: string
+    deliveryEndpoint?: string
+  },
+) {
+  if (!process.env.DATABASE_URL) return { id, ...patch }
+  const [updated] = await db
+    .update(subscriptions)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(subscriptions.id, id))
+    .returning()
+  if (!updated) throw new Error(`Subscription ${id} not found`)
   return updated
 }
 
@@ -163,6 +182,30 @@ export async function listChannels(ownerId?: string) {
     .from(deliveryChannels)
     .where(conditions.length ? (conditions[0] as ReturnType<typeof eq>) : undefined)
     .orderBy(desc(deliveryChannels.createdAt))
+}
+
+export async function createChannel(input: {
+  channelId: string
+  ownerId: string
+  type: string
+  endpoint: string
+}) {
+  if (!process.env.DATABASE_URL) {
+    return { ...input, id: Date.now(), active: true, failureCount: 0, createdAt: new Date() }
+  }
+  const [created] = await db
+    .insert(deliveryChannels)
+    .values(input)
+    .returning()
+  return created
+}
+
+export async function deleteChannel(channelId: string, ownerId: string) {
+  if (!process.env.DATABASE_URL) return { channelId }
+  await db
+    .delete(deliveryChannels)
+    .where(and(eq(deliveryChannels.channelId, channelId), eq(deliveryChannels.ownerId, ownerId)))
+  return { channelId }
 }
 
 // ── Webhook deliveries ────────────────────────────────────────────────────────
@@ -255,6 +298,54 @@ export function jsonError(message: string, status = 400) {
   return Response.json({ error: message }, { status })
 }
 
+// ── Health stats ──────────────────────────────────────────────────────────────
+
+export async function getHealthStats() {
+  if (!process.env.DATABASE_URL) return null
+  const [subCount] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(subscriptions)
+    .where(eq(subscriptions.active, true))
+
+  const [pendingCount] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(webhookDeliveries)
+    .where(sql`${webhookDeliveries.status} IN ('pending', 'retrying')`)
+
+  const [failedCount] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(webhookDeliveries)
+    .where(eq(webhookDeliveries.status, 'failed'))
+
+  const [deliveredCount] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(webhookDeliveries)
+    .where(eq(webhookDeliveries.status, 'delivered'))
+
+  const [eventCount] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(events)
+
+  const [latestIndexer] = await db
+    .select({ lastLedger: indexerState.lastLedger, updatedAt: indexerState.updatedAt, network: indexerState.network })
+    .from(indexerState)
+    .orderBy(desc(indexerState.updatedAt))
+    .limit(1)
+
+  return {
+    activeSubscriptions: subCount?.count ?? 0,
+    totalEventsIndexed: eventCount?.count ?? 0,
+    deliveries: {
+      pending: pendingCount?.count ?? 0,
+      failed: failedCount?.count ?? 0,
+      delivered: deliveredCount?.count ?? 0,
+    },
+    indexer: latestIndexer
+      ? { lastLedger: latestIndexer.lastLedger, lastRunAt: latestIndexer.updatedAt, network: latestIndexer.network }
+      : null,
+  }
+}
+
 // ── Auth challenges (DB-backed, replaces in-memory store) ─────────────────────
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000 // 5 minutes
@@ -262,13 +353,15 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 export async function saveChallenge(address: string, challenge: string): Promise<void> {
   if (!process.env.DATABASE_URL) return // dev: no-op, in-memory fallback in auth.ts
   const expiresAt = new Date(Date.now() + CHALLENGE_TTL_MS)
-  // Upsert: replace any existing challenge for this address
+  // One pending challenge per address — upsert on address so the old one is
+  // replaced rather than leaving stale rows.  The unique constraint on
+  // `challenge` stays as a secondary safety net.
   await db
     .insert(authChallenges)
     .values({ address, challenge, expiresAt })
     .onConflictDoUpdate({
-      target: authChallenges.challenge,
-      set: { challenge, expiresAt, usedAt: null },
+      target: authChallenges.address,
+      set: { challenge, expiresAt, usedAt: null, createdAt: new Date() },
     })
 }
 

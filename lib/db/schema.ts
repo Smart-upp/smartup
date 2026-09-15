@@ -106,14 +106,13 @@ export const authChallenges = pgTable(
   'authChallenges',
   {
     id: serial('id').primaryKey(),
-    address: text('address').notNull(),    // Stellar G-address
+    address: text('address').notNull().unique(), // one pending challenge per address
     challenge: text('challenge').notNull().unique(),
     expiresAt: timestamp('expiresAt').notNull(),
     usedAt: timestamp('usedAt'),           // set when consumed — single-use
     createdAt: timestamp('createdAt').defaultNow(),
   },
   (table) => [
-    index('idx_challenges_address').on(table.address),
     index('idx_challenges_expires').on(table.expiresAt),
   ]
 )

@@ -45,11 +45,15 @@ export async function POST(request: Request) {
     return jsonError(parsed.error.issues[0]?.message ?? 'Invalid request body.')
   }
 
-  // Always use the authenticated address as the owner — overrides anything in the body
-  const data: Parameters<typeof createSubscription>[0] = {
-    ...parsed.data,
-    ownerId: auth.ownerId,
+  try {
+    const data: Parameters<typeof createSubscription>[0] = {
+      ...parsed.data,
+      ownerId: auth.ownerId,
+    }
+    return Response.json({ data: await createSubscription(data) }, { status: 201 })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to create subscription.'
+    if ((err as { code?: string }).code === 'DUPLICATE') return jsonError(message, 409)
+    return jsonError(message, 500)
   }
-
-  return Response.json({ data: await createSubscription(data) }, { status: 201 })
 }

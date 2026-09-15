@@ -25,8 +25,9 @@ const ALLOWED_ORIGINS =
 function getAllowedOrigin(origin: string | null): string {
   if (!origin) return '*'
   if (process.env.NODE_ENV !== 'production') return origin
-  if (ALLOWED_ORIGINS.length === 0) return origin // no restriction configured
-  return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]
+  if (ALLOWED_ORIGINS.length === 0) return origin // no restriction configured — allow all
+  // Return the origin if it is allowlisted; empty string otherwise (effectively blocks the request).
+  return ALLOWED_ORIGINS.includes(origin) ? origin : ''
 }
 
 const CORS_HEADERS = {

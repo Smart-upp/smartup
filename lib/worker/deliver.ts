@@ -301,7 +301,10 @@ export async function enqueueMatchingDeliveries(eventId: string): Promise<number
       )
     if (!channel) continue
 
-    const deliveryId = `dlv_${sub.subscriptionId}_${eventId}_${Date.now()}`
+    // Use a deterministic deliveryId based on subscriptionId + eventId so that
+    // ON CONFLICT DO NOTHING in createDelivery deduplicates if the indexer
+    // re-processes the same ledger window.
+    const deliveryId = `dlv_${sub.subscriptionId}_${eventId}`
     await createDelivery({
       deliveryId,
       subscriptionId: sub.subscriptionId,

@@ -9,7 +9,6 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core'
-import { sql } from 'drizzle-orm'
 
 // Subscriptions: SmartUp subscription registry
 export const subscriptions = pgTable(

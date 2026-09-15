@@ -143,7 +143,6 @@ async function indexContract(
     networkConfig.rpcUrl,
     contractAddress,
     startLedger,
-    latestLedger,
   )
 
   result.eventsFound += rpcEvents.length
@@ -175,43 +174,66 @@ async function indexContract(
 
 // ── Soroban RPC getEvents (raw JSON-RPC) ──────────────────────────────────────
 
+/**
+ * Fetch contract events from the Soroban RPC `getEvents` method.
+ *
+ * The RPC accepts `startLedger` (inclusive) and an optional `pagination.cursor`
+ * for continuation — it does NOT accept `endLedger`.  We paginate with a
+ * cursor until we get fewer results than the page size, meaning we've caught up
+ * to the tip of the chain.
+ */
 async function fetchEvents(
   rpcUrl: string,
   contractAddress: string,
   startLedger: number,
-  endLedger: number,
 ): Promise<RpcEvent[]> {
-  const body = {
-    jsonrpc: '2.0',
-    id: 1,
-    method: 'getEvents',
-    params: {
-      startLedger,
-      endLedger,
+  const PAGE_SIZE = 10000 // hardcoded RPC maximum
+  const all: RpcEvent[] = []
+  let cursor: string | undefined
+
+  let cursorStartLedger: number | undefined = startLedger
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const params: Record<string, unknown> = {
+      ...(cursorStartLedger !== undefined ? { startLedger: cursorStartLedger } : {}),
       filters: [{ type: 'contract', contractIds: [contractAddress] }],
-      pagination: { limit: 10000 },
-    },
+      pagination: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+    }
+
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getEvents', params }),
+      signal: AbortSignal.timeout(30_000),
+    })
+
+    if (!response.ok) {
+      throw new Error(`RPC HTTP ${response.status}: ${response.statusText}`)
+    }
+
+    const json = (await response.json()) as {
+      result?: { events: RpcEvent[]; cursor?: string }
+      error?: { message: string; code?: number }
+    }
+
+    if (json.error) throw new Error(`RPC error (${json.error.code}): ${json.error.message}`)
+
+    const page = json.result?.events ?? []
+    all.push(...page)
+
+    // If we got a full page and there's a continuation cursor, fetch the next page.
+    // Once the page is smaller than PAGE_SIZE we've reached the tip.
+    if (page.length === PAGE_SIZE && json.result?.cursor) {
+      cursor = json.result.cursor
+      // After the first page, startLedger must be omitted — cursor takes over
+      cursorStartLedger = undefined
+    } else {
+      break
+    }
   }
 
-  const response = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  })
-
-  if (!response.ok) {
-    throw new Error(`RPC HTTP ${response.status}: ${response.statusText}`)
-  }
-
-  const json = (await response.json()) as {
-    result?: { events: RpcEvent[] }
-    error?: { message: string; code?: number }
-  }
-
-  if (json.error) throw new Error(`RPC error (${json.error.code}): ${json.error.message}`)
-
-  return json.result?.events ?? []
+  return all
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

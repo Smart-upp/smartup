@@ -57,25 +57,55 @@ export async function createSubscription(input: SubscriptionCreateInput & { owne
   if (!process.env.DATABASE_URL) {
     return { ...input, id: Date.now(), active: true, createdAt: new Date().toISOString() }
   }
-  const [created] = await db
-    .insert(subscriptions)
-    .values({
-      subscriptionId: input.subscriptionId,
-      ownerId: input.ownerId,
-      network: input.network,
-      contractAddress: input.contractAddress,
-      eventFilter: input.eventFilter ?? {},
-      deliveryChannel: input.deliveryChannel,
-      deliveryEndpoint: input.deliveryEndpoint,
-      metadata: input.metadata,
-    })
-    .returning()
-  return created
+  try {
+    const [created] = await db
+      .insert(subscriptions)
+      .values({
+        subscriptionId: input.subscriptionId,
+        ownerId: input.ownerId,
+        network: input.network,
+        contractAddress: input.contractAddress,
+        eventFilter: input.eventFilter ?? {},
+        deliveryChannel: input.deliveryChannel,
+        deliveryEndpoint: input.deliveryEndpoint,
+        metadata: input.metadata,
+      })
+      .returning()
+    return created
+  } catch (err) {
+    const message = err instanceof Error ? err.message : ''
+    if (message.includes('unique') || message.includes('duplicate') || message.includes('subscriptionId')) {
+      throw Object.assign(new Error(`A subscription with id '${input.subscriptionId}' already exists.`), { code: 'DUPLICATE' })
+    }
+    throw err
+  }
 }
 
 export async function deleteSubscription(id: number) {
   if (!process.env.DATABASE_URL) return { id }
+
+  // Look up the subscriptionId string so we can cancel orphaned deliveries
+  const [row] = await db
+    .select({ subscriptionId: subscriptions.subscriptionId })
+    .from(subscriptions)
+    .where(eq(subscriptions.id, id))
+    .limit(1)
+
   await db.delete(subscriptions).where(eq(subscriptions.id, id))
+
+  // Cancel any pending/retrying deliveries — they'll never succeed without the subscription
+  if (row) {
+    await db
+      .update(webhookDeliveries)
+      .set({ status: 'failed', errorMessage: 'Subscription deleted.' })
+      .where(
+        and(
+          eq(webhookDeliveries.subscriptionId, row.subscriptionId),
+          inArray(webhookDeliveries.status, ['pending', 'retrying']),
+        ),
+      )
+  }
+
   return { id }
 }
 
@@ -219,7 +249,7 @@ export async function getPendingDeliveries(limit = 50) {
     .from(webhookDeliveries)
     .where(
       and(
-        sql`${webhookDeliveries.status} IN ('pending', 'retrying')`,
+        inArray(webhookDeliveries.status, ['pending', 'retrying']),
         sql`(${webhookDeliveries.nextRetryAt} IS NULL OR ${webhookDeliveries.nextRetryAt} <= NOW())`,
       ),
     )
@@ -236,11 +266,14 @@ export async function createDelivery(input: {
   if (!process.env.DATABASE_URL) {
     return { ...input, id: Date.now(), status: 'pending', attempt: 1, createdAt: new Date() }
   }
+  // ON CONFLICT DO NOTHING prevents duplicate deliveries if the indexer
+  // runs twice for the same (subscriptionId, eventId) pair.
   const [row] = await db
     .insert(webhookDeliveries)
     .values({ ...input, status: 'pending', attempt: 1 })
+    .onConflictDoNothing()
     .returning()
-  return row
+  return row ?? null
 }
 
 export async function updateDelivery(

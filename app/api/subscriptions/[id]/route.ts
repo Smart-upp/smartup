@@ -20,7 +20,6 @@ import {
   toggleSubscription,
   updateSubscription,
 } from '@/lib/db/repository'
-import { SubscriptionToggleSchema, SubscriptionUpdateSchema } from '@/lib/schemas'
 import { z } from 'zod'
 
 // Combined patch schema — accepts toggle fields, update fields, or both

@@ -5,7 +5,10 @@
  */
 
 import { requireAuth } from '@/lib/auth'
-import { deleteChannel, jsonError, listChannels } from '@/lib/db/repository'
+import { deleteChannel, jsonError } from '@/lib/db/repository'
+import { db } from '@/lib/db/index'
+import { deliveryChannels } from '@/lib/db/schema'
+import { and, eq } from 'drizzle-orm'
 
 export async function DELETE(
   request: Request,
@@ -16,9 +19,18 @@ export async function DELETE(
 
   const { channelId } = await context.params
 
-  // Verify the channel belongs to this user
-  const channels = await listChannels(auth.ownerId)
-  const existing = channels.find((c) => c.channelId === channelId)
+  // Single targeted query — avoids loading all owner channels into memory
+  const [existing] = await db
+    .select({ channelId: deliveryChannels.channelId })
+    .from(deliveryChannels)
+    .where(
+      and(
+        eq(deliveryChannels.channelId, channelId),
+        eq(deliveryChannels.ownerId, auth.ownerId),
+      ),
+    )
+    .limit(1)
+
   if (!existing) return jsonError('Channel not found.', 404)
 
   await deleteChannel(channelId, auth.ownerId)
